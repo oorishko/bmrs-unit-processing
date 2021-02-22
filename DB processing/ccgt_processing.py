@@ -66,8 +66,9 @@ big_boy_units = ['T_CARR-1','T_CARR-2','T_DAMC-1','E_KLYN-A-1','T_MEDP-1', 'T_MR
                  'T_SEAB-1','T_SEAB-2', 'T_RYHPS-1','T_KEAD-1','T_LAGA-1','T_HUMR-1', 'T_CNQPS-4',
                  'T_CNQPS-1','T_SPLN-1','T_WBURB-1', 'T_WBURB-2', 'T_WBURB-3']
 
-for i in range(0, 20, 5):
+for i in range(5, 20, 5):
     df = bmrs_flow(big_boy_units[i:i+5])
+    df.replace([np.inf, -np.inf], np.nan, inplace = True)
     sandbox_engine = connect_to_db()
     write_to_db(sandbox_engine, df, table_name)
  

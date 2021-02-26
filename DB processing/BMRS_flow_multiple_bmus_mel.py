@@ -15,18 +15,18 @@ import random
 import datetime
 from tqdm import tqdm
 
-IDEAL_PPTH_TO_GBP_MWH_MULTIPLIER = 0.341214245
-GAS_EFF = 0.42
-EMISSIONS_FACTOR =  0.1841639
-emissions_factor =  EMISSIONS_FACTOR
-pays_EUAs = False
-variable_commodity_charge_ppth = 1.184
+#IDEAL_PPTH_TO_GBP_MWH_MULTIPLIER = 0.341214245
+#GAS_EFF = 0.42
+#EMISSIONS_FACTOR =  0.1841639
+#emissions_factor =  EMISSIONS_FACTOR
+#pays_EUAs = False
+#variable_commodity_charge_ppth = 1.184
 #peaker_dict = {
 #        'Bloxwich Battery':'E_ARNKB-1',
 #        'Roundponds Battery': 'V__HHABI001'
 #        }
 
-#units = ['T_PEHE-1']
+#units = ['T_HUMR-1']
 def bmrs_flow(units):
     units_str = "'" + "','".join(units)+ "'"
     print(units_str)
@@ -48,6 +48,7 @@ def bmrs_flow(units):
         sql_query = '''SELECT bmunit_id, from_time, to_time, from_level, to_level, settlement_period 
                     FROM BMRS_PN_New
                     WHere bmunit_id IN ({})
+                    AND from_time >'2016-01-01'
                     '''.format(units_str)
         
         fpn_data = sql.get_data(sql_query, sandbox_or_production = 'sandbox')
@@ -79,8 +80,8 @@ def bmrs_flow(units):
             fpn_min = fpn.resample('1T').interpolate()
             fpn_hh = fpn_min.resample('30T').mean()
             
-            fpn_hh = fpn_hh.rename(columns = {'from_level':'FPN'}).rename_axis('DateTime')
-            fpn_min = fpn_min.rename(columns = {'from_level':'FPN'}).rename_axis('DateTime')
+            fpn_hh = fpn_hh.rename(columns = {'from_level':'FPN Unadjusted'}).rename_axis('DateTime')
+            fpn_min = fpn_min.rename(columns = {'from_level':'FPN Unadjusted'}).rename_axis('DateTime')
             fpn_hh['bmunit_id'] = bmu
             fpn_min['bmunit_id'] = bmu
             combine_fpn_min.append(fpn_min)
@@ -88,13 +89,78 @@ def bmrs_flow(units):
         
         fpn_min = pd.concat(combine_fpn_min)
         fpn_hh = pd.concat(combine_fpn_hh)
-        return fpn_min, fpn_hh
+        fpn_min = fpn_min.reset_index()
+        fpn_hh = fpn_hh.reset_index()
+        
+        combine_mel_min = []
+        combine_mel_hh = []
+        
+        mel_sql_query = '''SELECT bmunit_id, from_time, to_time, from_level, to_level, settlement_period 
+                    FROM BMRS_MEL_New
+                    WHere bmunit_id IN ({})
+                    AND from_time >'2016-01-01'                    
+                    '''.format(units_str)
+        
+        mel_data = sql.get_data(mel_sql_query, sandbox_or_production = 'sandbox')
+        for bmu in list(mel_data.bmunit_id.unique()):
+            mel = mel_data[mel_data.bmunit_id == bmu].copy()
+            mel['from_time'] = pd.to_datetime(mel['from_time'], format = '%Y-%m-%d %H:%M:%S')
+            mel['to_time'] = pd.to_datetime(mel['to_time'], format = '%Y-%m-%d %H:%M:%S')
+            
+            mel = mel.sort_values(by = 'from_time', ascending = True).reset_index(drop = True)
+        
+            mel.set_index('from_time', inplace = True)
+            mel['date'] = mel.index.date
+            mel_to_times = mel.loc[mel.groupby(['date', 'settlement_period']).to_time.idxmax()][['to_level', 'to_time', 'settlement_period']]
+            mel_to_times.reset_index(drop = True, inplace = True)
+            mel_to_times = mel_to_times.rename(columns = {'to_level' : 'from_level', 'to_time':'from_time'})
+            mel_to_times.set_index('from_time', inplace = True)
+            mel_to_times['order'] = 2
+            mel = mel[['from_level']]
+            mel['order'] = 1
+            mel = pd.concat([mel, mel_to_times[['from_level', 'order']]])
+            mel.reset_index(inplace = True)
+            mel.drop_duplicates(subset = ['from_time', 'from_level'], inplace = True)
+            mel = mel.sort_values(by = ['from_time', 'order'], ascending = True)
+            mel.set_index('from_time', inplace = True)
+            
+            mel = mel[~mel.index.duplicated(keep = 'first')][['from_level']]
+            
+            #time_range = pd.date_range(start = str(fpn.index[0]), end = str(fpn.index[-1]), freq = '30T')
+            mel_min = mel.resample('1T').interpolate()
+            mel_hh = mel_min.resample('30T').mean()
+            
+            mel_hh = mel_hh.rename(columns = {'from_level':'MEL'}).rename_axis('DateTime')
+            mel_min = mel_min.rename(columns = {'from_level':'MEL'}).rename_axis('DateTime')
+            mel_hh['bmunit_id'] = bmu
+            mel_min['bmunit_id'] = bmu
+            combine_mel_min.append(mel_min)
+            combine_mel_hh.append(mel_hh)
+            
+        mel_min = pd.concat(combine_mel_min)
+        mel_hh = pd.concat(combine_mel_hh)        
+        mel_min = mel_min.reset_index()
+        mel_hh = mel_hh.reset_index()  
+        
+        fpn_hh_adjusted = fpn_hh.merge(mel_hh, on = ['bmunit_id', 'DateTime'], how = 'left')
+        
+        fpn_hh_adjusted.loc[fpn_hh_adjusted['FPN Unadjusted'] > fpn_hh_adjusted['MEL'],'FPN'] = fpn_hh_adjusted['MEL']
+        fpn_hh_adjusted.loc[fpn_hh_adjusted['FPN Unadjusted'] <= fpn_hh_adjusted['MEL'],'FPN'] = fpn_hh_adjusted['FPN Unadjusted']
+        fpn_hh_adjusted.loc[fpn_hh_adjusted['FPN'].isna(), 'FPN'] = fpn_hh_adjusted['FPN Unadjusted']
+        
+        fpn_min_adjusted = fpn_min.merge(mel_min, on = ['bmunit_id', 'DateTime'], how = 'left')
+        fpn_min_adjusted.loc[fpn_min_adjusted['FPN Unadjusted'] > fpn_min_adjusted['MEL'],'FPN'] = fpn_min_adjusted['MEL']
+        fpn_min_adjusted.loc[fpn_min_adjusted['FPN Unadjusted'] <= fpn_min_adjusted['MEL'],'FPN'] = fpn_min_adjusted['FPN Unadjusted']
+        fpn_min_adjusted.loc[fpn_min_adjusted['FPN'].isna(), 'FPN'] = fpn_min_adjusted['FPN Unadjusted']        
+        
+        return fpn_min_adjusted, fpn_hh_adjusted
     
     def get_boalf_profile():
         sql_query = '''
                     SELECT * 
                     FROM BMRS_BOALF
                     WHere bmunit_id IN ({})
+                    AND DateTime >'2016-01-01'             
                     '''.format(units_str)
     
         boalf_data = sql.get_data(sql_query, sandbox_or_production = 'sandbox')
@@ -126,13 +192,13 @@ def bmrs_flow(units):
                     SELECT * 
                     FROM BMRS_BOD
                     WHere bmunit_id IN ({})
+                    AND from_time >'2016-01-01'
                     '''.format(units_str)
                     
         bod_data = sql.get_data(sql_query, sandbox_or_production = 'sandbox')
         
         bod_list = []
         for bmu in list(bod_data.bmunit_id.unique()):
-            print(bmu)
             bod = bod_data[bod_data.bmunit_id == bmu].copy()
             bod['from_time'] = pd.to_datetime(bod['from_time'], format = '%Y-%m-%d %H:%M:%S')
             bod['to_time'] = pd.to_datetime(bod['to_time'], format = '%Y-%m-%d %H:%M:%S')
@@ -152,61 +218,49 @@ def bmrs_flow(units):
                     'bid_price': list,
                     'offer_price' : list})
             bod_clean.reset_index(inplace = True)
+            bod_clean['bm_offer_pair_merged'] = bod_clean.apply(lambda row: {row['BOPN Sign']:row['bm_offer_pair_number']}, axis=1)
+            bod_clean['from_level_merged'] = bod_clean.apply(lambda row: {row['BOPN Sign']:row['from_level']}, axis=1)
             bod_clean = bod_clean.groupby(by = ['Date', 'settlement_period']).agg({
                     'from_time': 'first',
                     'to_time': 'first',
                     'bmunit_id': 'first',
-                    'bm_offer_pair_number': list, 
-                    'from_level': list,
+                    'bm_offer_pair_merged': list, 
+                    'from_level_merged': list,
                     'to_level': list,
                     'bid_price': 'first',
                     'offer_price' : 'first'})
             bod_clean.reset_index(inplace = True)        
+            bod_clean['from_level_merged'] = bod_clean.apply(lambda x: {**x['from_level_merged'][0], **x['from_level_merged'][1]} if len(x['from_level_merged']) == 2 else x['from_level_merged'][0], axis = 1 )
             bod_clean.set_index('from_time',inplace = True)
-            try:
-                bod_clean['bid_levels'] = bod_clean.apply(lambda x: x['from_level'][0], axis = 1)
-            except:
-                print('BMU {} did not submit Bid Levels'.format(bmu))
-            try:   
-                bod_clean['offer_levels'] = bod_clean.apply(lambda x: x['from_level'][1] if len(x['from_level'][1]) > 1 else np.nan, axis = 1)
-            except:
-                print('BMU {} did not submit Offer Levels'.format(bmu))         
-            if 'bid_price' in bod_clean.columns:
-                bod_clean['bid_price-5'] = bod_clean.apply(lambda x: x['bid_price'][-5] if len(x['bid_price']) > 4 else np.nan, axis = 1)
-                bod_clean['bid_price-4'] = bod_clean.apply(lambda x: x['bid_price'][-4] if len(x['bid_price']) > 3 else np.nan, axis = 1)
-                bod_clean['bid_price-3'] = bod_clean.apply(lambda x: x['bid_price'][-3] if len(x['bid_price']) > 2 else np.nan, axis = 1)
-                bod_clean['bid_price-2'] = bod_clean.apply(lambda x: x['bid_price'][-2] if len(x['bid_price']) > 1 else np.nan, axis = 1)
-                bod_clean['bid_price-1'] = bod_clean.apply(lambda x: x['bid_price'][-1], axis = 1)
-            else:
-                bod_clean['bid_price-5', 'bid_price-4', 'bid_price-3', 'bid_price-2', 'bid_price-1'] = np.nan
-            if 'offer_price' in bod_clean.columns:
-                bod_clean['offer_price-1'] = bod_clean.apply(lambda x: x['offer_price'][0], axis = 1)
-                bod_clean['offer_price-2'] = bod_clean.apply(lambda x: x['offer_price'][1] if len(x['offer_price']) > 1 else np.nan, axis = 1)
-                bod_clean['offer_price-3'] = bod_clean.apply(lambda x: x['offer_price'][2] if len(x['offer_price']) > 2 else np.nan, axis = 1)
-                bod_clean['offer_price-4'] = bod_clean.apply(lambda x: x['offer_price'][3] if len(x['offer_price']) > 3 else np.nan, axis = 1)
-                bod_clean['offer_price-5'] = bod_clean.apply(lambda x: x['offer_price'][4] if len(x['offer_price']) > 4 else np.nan, axis = 1)
-            else:
-                bod_clean['offer_price-1','offer_price-2','offer_price-3','offer_price-4','offer_price-5'] = np.nan
+
+            bod_clean['bid_levels'] = bod_clean.apply(lambda x: x['from_level_merged']['neg'] if 'neg' in x['from_level_merged'].keys() else [], axis = 1)
+            bod_clean['offer_levels'] = bod_clean.apply(lambda x: x['from_level_merged']['pos'] if 'pos' in x['from_level_merged'].keys() else [], axis = 1)
+            
+            bod_clean['bid_price-5'] = bod_clean.apply(lambda x: x['bid_price'][-5] if len(x['bid_price']) > 4 else np.nan, axis = 1)
+            bod_clean['bid_price-4'] = bod_clean.apply(lambda x: x['bid_price'][-4] if len(x['bid_price']) > 3 else np.nan, axis = 1)
+            bod_clean['bid_price-3'] = bod_clean.apply(lambda x: x['bid_price'][-3] if len(x['bid_price']) > 2 else np.nan, axis = 1)
+            bod_clean['bid_price-2'] = bod_clean.apply(lambda x: x['bid_price'][-2] if len(x['bid_price']) > 1 else np.nan, axis = 1)
+            bod_clean['bid_price-1'] = bod_clean.apply(lambda x: x['bid_price'][-1], axis = 1)
+
+            bod_clean['offer_price-1'] = bod_clean.apply(lambda x: x['offer_price'][0], axis = 1)
+            bod_clean['offer_price-2'] = bod_clean.apply(lambda x: x['offer_price'][1] if len(x['offer_price']) > 1 else np.nan, axis = 1)
+            bod_clean['offer_price-3'] = bod_clean.apply(lambda x: x['offer_price'][2] if len(x['offer_price']) > 2 else np.nan, axis = 1)
+            bod_clean['offer_price-4'] = bod_clean.apply(lambda x: x['offer_price'][3] if len(x['offer_price']) > 3 else np.nan, axis = 1)
+            bod_clean['offer_price-5'] = bod_clean.apply(lambda x: x['offer_price'][4] if len(x['offer_price']) > 4 else np.nan, axis = 1)
+
+            bod_clean['bl-5'] = bod_clean.apply(lambda x: x['bid_levels'][-5] if len(x['bid_levels']) > 4 else np.nan, axis = 1)
+            bod_clean['bl-4'] = bod_clean.apply(lambda x: x['bid_levels'][-4] if len(x['bid_levels']) > 3 else np.nan, axis = 1)
+            bod_clean['bl-3'] = bod_clean.apply(lambda x: x['bid_levels'][-3] if len(x['bid_levels']) > 2 else np.nan, axis = 1)
+            bod_clean['bl-2'] = bod_clean.apply(lambda x: x['bid_levels'][-2] if len(x['bid_levels']) > 1 else np.nan, axis = 1)
+            bod_clean['bl-1'] = bod_clean.apply(lambda x: x['bid_levels'][-1] if len(x['bid_levels']) > 0 else np.nan, axis = 1)
+   
+            bod_clean['ol-1'] = bod_clean.apply(lambda x: x['offer_levels'][0] if len(x['offer_levels']) > 0 else np.nan, axis = 1)
+            bod_clean['ol-2'] = bod_clean.apply(lambda x: x['offer_levels'][1] if len(x['offer_levels']) > 1 else np.nan, axis = 1)
+            bod_clean['ol-3'] = bod_clean.apply(lambda x: x['offer_levels'][2] if len(x['offer_levels']) > 2 else np.nan, axis = 1)
+            bod_clean['ol-4'] = bod_clean.apply(lambda x: x['offer_levels'][3] if len(x['offer_levels']) > 3 else np.nan, axis = 1)
+            bod_clean['ol-5'] = bod_clean.apply(lambda x: x['offer_levels'][4] if len(x['offer_levels']) > 4 else np.nan, axis = 1)
                 
-            if 'bid_levels' in bod_clean.columns:
-                bod_clean['bl-5'] = bod_clean.apply(lambda x: x['bid_levels'][-5] if len(x['bid_levels']) > 4 else np.nan, axis = 1)
-                bod_clean['bl-4'] = bod_clean.apply(lambda x: x['bid_levels'][-4] if len(x['bid_levels']) > 3 else np.nan, axis = 1)
-                bod_clean['bl-3'] = bod_clean.apply(lambda x: x['bid_levels'][-3] if len(x['bid_levels']) > 2 else np.nan, axis = 1)
-                bod_clean['bl-2'] = bod_clean.apply(lambda x: x['bid_levels'][-2] if len(x['bid_levels']) > 1 else np.nan, axis = 1)
-                bod_clean['bl-1'] = bod_clean.apply(lambda x: x['bid_levels'][-1], axis = 1)
-            else:
-                bod_clean[['bl-5', 'bl-4', 'bl-3', 'bl-2','bl-1']] = np.nan
-                
-            if 'offer_levels' in bod_clean.columns:    
-                bod_clean['ol-1'] = bod_clean.apply(lambda x: x['offer_levels'][0] if isinstance(x['offer_levels'], list) else np.nan, axis = 1)
-                bod_clean['ol-2'] = bod_clean.apply(lambda x: x['offer_levels'][1] if isinstance(x['offer_levels'], list) and len(x['offer_levels']) > 1 else np.nan, axis = 1)
-                bod_clean['ol-3'] = bod_clean.apply(lambda x: x['offer_levels'][2] if isinstance(x['offer_levels'], list) and len(x['offer_levels']) > 2 else np.nan, axis = 1)
-                bod_clean['ol-4'] = bod_clean.apply(lambda x: x['offer_levels'][3] if isinstance(x['offer_levels'], list) and len(x['offer_levels']) > 3 else np.nan, axis = 1)
-                bod_clean['ol-5'] = bod_clean.apply(lambda x: x['offer_levels'][4] if isinstance(x['offer_levels'], list) and len(x['offer_levels']) > 4 else np.nan, axis = 1)
-            else:
-                bod_clean[['ol-1', 'ol-2', 'ol-3', 'ol-4', 'ol-5']] = np.nan
-                
-            bod_clean.drop(['bm_offer_pair_number', 'from_level', 'to_level', 'bid_price', 'offer_price'], axis = 1, inplace = True)
+            bod_clean.drop(['bm_offer_pair_merged', 'from_level_merged', 'to_level', 'bid_price', 'offer_price'], axis = 1, inplace = True)
             bod_list.append(bod_clean)
         bod_final = pd.concat(bod_list)
         return bod_final
@@ -214,8 +268,6 @@ def bmrs_flow(units):
     def get_bm_and_co_volumes():
         # get fpn
         fpn_min, fpn_hh = get_fpn_profile()
-        fpn_min = fpn_min.reset_index()
-        fpn_hh = fpn_hh.reset_index()
         
         # get boalf
         boalf = get_boalf_profile()
@@ -225,20 +277,41 @@ def bmrs_flow(units):
         
         # when no BM is in play, using HH resampled FPN is more accurate
         # separate them out into merging minutely and HH
+        collect_boas = []
+        for bmu in fpn_hh.bmunit_id.unique():
+            fpn_bmu = fpn_hh[fpn_hh.bmunit_id == bmu].sort_values(by = 'DateTime', ascending = True)
+            boalf_bmu = boalf[boalf.bmunit_id == bmu].copy().sort_values(by = ['DateTime', 'acceptance_number'], ascending = True)
+            bmu_start_date = min(fpn_bmu.DateTime.iloc[0], boalf_bmu.DateTime.iloc[0]).floor('30T')
+            bmu_end_date = max(fpn_bmu.DateTime.iloc[-1], boalf_bmu.DateTime.iloc[-1]).ceil('30T')
+            
+            pre_boa_range = pd.date_range(start = bmu_start_date, end = boalf_bmu.DateTime.iloc[0].floor('30T'), freq = '30T')
+            pre_boa_range_df = pd.DataFrame(index = pre_boa_range, columns = boalf.columns[1:], data = np.nan)
+            pre_boa_range_df.rename_axis('DateTime', inplace = True)
+            pre_boa_range_df.reset_index(inplace = True)
+            
+            post_boa_range = pd.date_range(start = boalf_bmu.DateTime.iloc[-1].ceil('30T'), end = bmu_end_date, freq = '30T')
+            post_boa_range_df = pd.DataFrame(index = post_boa_range, columns = boalf.columns[1:], data = np.nan)
+            post_boa_range_df.rename_axis('DateTime', inplace = True)
+            post_boa_range_df.reset_index(inplace = True)
+            
+            boalf_bmu = pd.concat([pre_boa_range_df, boalf_bmu, post_boa_range_df])
+            boalf_bmu['bmunit_id'] = bmu
+            
+            collect_boas.append(boalf_bmu)
+        boalf = pd.concat(collect_boas).sort_values(by =['bmunit_id', 'DateTime', 'acceptance_number'], ascending = True)        
+        boalf.reset_index(inplace = True, drop = True)
+        
         df_wo_boalf = boalf.loc[boalf.acceptance_number.isna(), :]
         df_with_boalf = boalf.loc[boalf.acceptance_number.notna(), :]
         fpn_with_boalf = df_with_boalf.merge(fpn_min, how = 'left', on = ['DateTime','bmunit_id'])
-        fpn_wo_boalf = df_wo_boalf.merge(fpn_hh, how = 'outer', on = ['DateTime','bmunit_id'])
+        fpn_wo_boalf = df_wo_boalf.merge(fpn_hh, how = 'left', on = ['DateTime','bmunit_id'])
         fpn_and_boalf = pd.concat([fpn_with_boalf, fpn_wo_boalf])
         fpn_and_boalf.sort_values(inplace = True, by = ['bmunit_id','DateTime'])
-        
-        fpn_and_boalf = boalf.merge(fpn_min,how = 'outer', on = ['DateTime', 'bmunit_id'])
         # keep Dates
         fpn_and_boalf.reset_index(inplace = True)
-        
+        fpn_and_boalf.loc[fpn_and_boalf.settlement_period.isna(), 'settlement_period'] = fpn_and_boalf.apply(lambda x: 1 + (x['DateTime'].hour * 2) + (x['DateTime'].minute // 30), axis = 1)
         # get bod
         bod = get_bod_profile()
-        bod.reset_index(inplace = True)
         
         # joing bod with fpn and boalf
         all_bb = fpn_and_boalf.merge(bod, how = 'left', on = ['bmunit_id', 'Date', 'settlement_period'])
@@ -286,12 +359,14 @@ def bmrs_flow(units):
             # offer and bid volume in MWh
             # this logic to get volumes is CORRECT AND NECESSARY
             all_bmu_data.loc[:, 'CO Volume'] = all_bmu_data['FPN Volume']
-            all_bmu_data.loc[(all_bmu_data['BOA Value'] > all_bmu_data['FPN']) | (all_bmu_data['BM Next'] > all_bmu_data['FPN Next']), 'Offer Volume'] = all_bmu_data['BM Volume'] - all_bmu_data['FPN Volume']
-            all_bmu_data.loc[(all_bmu_data['BOA Value'] > all_bmu_data['FPN']) | (all_bmu_data['BM Next'] > all_bmu_data['FPN Next']), 'CO Volume'] = all_bmu_data['BM Volume'] - all_bmu_data['Offer Volume']
-            
             all_bmu_data.loc[(all_bmu_data['BOA Value'] < all_bmu_data['FPN']) | (all_bmu_data['BM Next'] < all_bmu_data['FPN Next']), 'Bid Volume'] = all_bmu_data['FPN Volume'] - all_bmu_data['BM Volume']
-            all_bmu_data.loc[(all_bmu_data['BOA Value'] < all_bmu_data['FPN']) | (all_bmu_data['BM Next'] < all_bmu_data['FPN Next']), 'CO Volume'] = all_bmu_data['FPN Volume'] - all_bmu_data['Bid Volume']
+            all_bmu_data.loc[(all_bmu_data['BOA Value'] > all_bmu_data['FPN']) | (all_bmu_data['BM Next'] > all_bmu_data['FPN Next']), 'Offer Volume'] = all_bmu_data['BM Volume'] - all_bmu_data['FPN Volume']
             
+            all_bmu_data.loc[(all_bmu_data['BOA Value'] < all_bmu_data['FPN']) | (all_bmu_data['BM Next'] < all_bmu_data['FPN Next']), 'CO Volume'] = all_bmu_data['FPN Volume'] - all_bmu_data['Bid Volume']        
+            all_bmu_data.loc[(all_bmu_data['BOA Value'] > all_bmu_data['FPN']) | (all_bmu_data['BM Next'] > all_bmu_data['FPN Next']), 'CO Volume'] = all_bmu_data['BM Volume'] - all_bmu_data['Offer Volume']
+            # this is needed to get correct offer/bid volumes
+            all_bmu_data.loc[(all_bmu_data['BM Volume'].isna()) & (all_bmu_data['FPN Volume'] > 0), 'CO Volume'] = all_bmu_data['FPN Volume']
+
             # some of the above conditions qualifies for both offers and bids, but the incorrect volume will be negative
             # remove all negative values
             all_bmu_data.loc[all_bmu_data['Offer Volume'] < 0, 'Offer Volume'] = 0 
@@ -375,6 +450,9 @@ def bmrs_flow(units):
             all_bmu_data['HH'] = all_bmu_data['DateTime'].dt.floor('30T')
             all_bmu_data = all_bmu_data.fillna(0)
             bmu_hh_summary = all_bmu_data.groupby(by = ['bmunit_id','HH']).agg({
+                    'FPN Unadjusted': 'mean',
+                    'MEL': 'mean', 
+                    'FPN': 'mean',
                     'FPN Volume': 'sum',
                     'CO Volume' : 'sum',
                     'Bid Vol @ 5':'sum',

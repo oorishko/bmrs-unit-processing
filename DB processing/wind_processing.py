@@ -39,7 +39,7 @@ def write_to_db(engine, df, table_name):
         et = time.time()
         print('Written {} rows to into {} in {:4.2f} seconds.'.format(len(df), table_name, et-st))
 
-table_name = 'Windfarm_incomes_BMRS_test'
+table_name = 'Wind_BMRS_Processing'
 
 
 wind_units_lcp = sql.get_data('''
@@ -60,14 +60,14 @@ wind_units_enappsys_sql =   """
 
 wind_units_enappsys = pd.read_sql(wind_units_enappsys_sql, connection)
 
-wind_units = list(set(wind_units_enappsys.entity_id).union(set(wind_units_lcp.plant_id)) - set(['2__PPGEN001','T_GANW-11','T_GLWSW-1','T_GNFSW-2','T_HOWAO-1','T_HRSTW-1','T_SHRSW-1','T_WHILW-2']))
+wind_units = list(set(wind_units_enappsys.entity_id).union(set(wind_units_lcp.plant_id)))
 
-big_boy_units = ['T_CARR-1','T_CARR-2','T_DAMC-1','E_KLYN-A-1','T_MEDP-1', 'T_MRWD-1','T_PEHE-1', 
-                 'T_SEAB-1','T_SEAB-2', 'T_RYHPS-1','T_KEAD-1','T_LAGA-1','T_HUMR-1', 'T_CNQPS-4',
-                 'T_CNQPS-1','T_SPLN-1','T_WBURB-1', 'T_WBURB-2', 'T_WBURB-3']
+#big_boy_units = ['T_CARR-1','T_CARR-2','T_DAMC-1','E_KLYN-A-1','T_MEDP-1', 'T_MRWD-1','T_PEHE-1', 
+#                 'T_SEAB-1','T_SEAB-2', 'T_RYHPS-1','T_KEAD-1','T_LAGA-1','T_HUMR-1', 'T_CNQPS-4',
+#                 'T_CNQPS-1','T_SPLN-1','T_WBURB-1', 'T_WBURB-2', 'T_WBURB-3']
 
-for i in range(0, 155, 5):
-    df = bmrs_flow(wind_units[i:i+5])
+for i in range(0, 160, 10):
+    df = bmrs_flow(wind_units[i:i+10])
     sandbox_engine = connect_to_db()
     write_to_db(sandbox_engine, df, table_name)
  

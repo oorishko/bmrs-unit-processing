@@ -47,8 +47,8 @@ def bmrs_flow(units):
         
         sql_query = '''SELECT bmunit_id, from_time, to_time, from_level, to_level, settlement_period 
                     FROM BMRS_PN_New
-                    WHere bmunit_id IN ({})
-                    '''.format(units_str)
+                    WHere bmunit_id = 'T_HUMR-1'
+                    '''#.format(units_str)
         
         fpn_data = sql.get_data(sql_query, sandbox_or_production = 'sandbox')
         for bmu in list(fpn_data.bmunit_id.unique()):
@@ -94,8 +94,8 @@ def bmrs_flow(units):
         sql_query = '''
                     SELECT * 
                     FROM BMRS_BOALF
-                    WHere bmunit_id IN ({})
-                    '''.format(units_str)
+                    WHere bmunit_id = 'T_HUMR-1'
+                    '''#.format(units_str)
     
         boalf_data = sql.get_data(sql_query, sandbox_or_production = 'sandbox')
         boalf_list = []
@@ -125,8 +125,8 @@ def bmrs_flow(units):
         sql_query = '''
                     SELECT * 
                     FROM BMRS_BOD
-                    WHere bmunit_id IN ({})
-                    '''.format(units_str)
+                    WHere bmunit_id = 'T_HUMR-1'
+                    '''#.format(units_str)
                     
         bod_data = sql.get_data(sql_query, sandbox_or_production = 'sandbox')
         
@@ -231,8 +231,6 @@ def bmrs_flow(units):
         fpn_wo_boalf = df_wo_boalf.merge(fpn_hh, how = 'outer', on = ['DateTime','bmunit_id'])
         fpn_and_boalf = pd.concat([fpn_with_boalf, fpn_wo_boalf])
         fpn_and_boalf.sort_values(inplace = True, by = ['bmunit_id','DateTime'])
-        
-        fpn_and_boalf = boalf.merge(fpn_min,how = 'outer', on = ['DateTime', 'bmunit_id'])
         # keep Dates
         fpn_and_boalf.reset_index(inplace = True)
         
@@ -375,6 +373,9 @@ def bmrs_flow(units):
             all_bmu_data['HH'] = all_bmu_data['DateTime'].dt.floor('30T')
             all_bmu_data = all_bmu_data.fillna(0)
             bmu_hh_summary = all_bmu_data.groupby(by = ['bmunit_id','HH']).agg({
+                    'FPN Unadjusted': 'mean',
+                    'MEL': 'mean', 
+                    'FPN': 'mean',
                     'FPN Volume': 'sum',
                     'CO Volume' : 'sum',
                     'Bid Vol @ 5':'sum',

@@ -8,7 +8,7 @@ Created on Fri Feb 19 19:03:28 2021
 import pandas as pd
 import numpy as np
 from sumo.io import sql
-from BMRS_flow_multiple_bmus import bmrs_flow
+from BMRS_flow_multiple_bmus_mel import bmrs_flow
 import time
 import urllib.parse
 from sqlalchemy import create_engine
@@ -62,13 +62,13 @@ table_name = 'CCGT_BMRS_Processing'
 #
 #wind_units = list(set(wind_units_enappsys.entity_id).union(set(wind_units_lcp.plant_id)) - set(['2__PPGEN001','T_GANW-11','T_GLWSW-1','T_GNFSW-2','T_HOWAO-1','T_HRSTW-1','T_SHRSW-1','T_WHILW-2']))
 
-big_boy_units = ['T_CARR-1','T_CARR-2','T_DAMC-1','E_KLYN-A-1','T_MEDP-1', 'T_MRWD-1','T_PEHE-1', 
-                 'T_SEAB-1','T_SEAB-2', 'T_RYHPS-1','T_KEAD-1','T_LAGA-1','T_HUMR-1', 'T_CNQPS-4',
-                 'T_CNQPS-1','T_SPLN-1','T_WBURB-1', 'T_WBURB-2', 'T_WBURB-3']
+#big_boy_units = ['T_CARR-1','T_CARR-2','T_DAMC-1','E_KLYN-A-1','T_MEDP-1', 'T_MRWD-1','T_PEHE-1', 
+#                 'T_SEAB-1','T_SEAB-2', 'T_RYHPS-1','T_KEAD-1','T_LAGA-1','T_HUMR-1', 'T_CNQPS-4',
+#                 'T_CNQPS-1','T_SPLN-1','T_WBURB-1', 'T_WBURB-2', 'T_WBURB-3', 'T_DRAXX-4']
+big_boy_units = ['T_HUMR-1','T_RYHPS-1','T_DAMC-1','E_KLYN-A-1','T_LAGA-1',]
 
-for i in range(5, 20, 5):
-    df = bmrs_flow(big_boy_units[i:i+5])
-    df.replace([np.inf, -np.inf], np.nan, inplace = True)
-    sandbox_engine = connect_to_db()
-    write_to_db(sandbox_engine, df, table_name)
+df = bmrs_flow(big_boy_units)
+df.replace([np.inf, -np.inf], np.nan, inplace = True)
+sandbox_engine = connect_to_db()
+write_to_db(sandbox_engine, df, table_name)
  

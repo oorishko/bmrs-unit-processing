@@ -14,6 +14,8 @@ import time
 import random
 import datetime
 from tqdm import tqdm
+from dateutil import relativedelta
+import math
 
 #IDEAL_PPTH_TO_GBP_MWH_MULTIPLIER = 0.341214245
 #GAS_EFF = 0.42
@@ -26,9 +28,12 @@ from tqdm import tqdm
 #        'Roundponds Battery': 'V__HHABI001'
 #        }
 
-units = ['T_HUMR-1']
-def bmrs_flow(units):
+units = ['T_SPLN-1']
+def bmrs_flow(units, start_date):
     units_str = "'" + "','".join(units)+ "'"
+    start_date = '2016-01-01'
+    end_date = '2018-01-01'
+    #end_date = str(pd.Timestamp.now().date() - pd.Timedelta('1 day'))
     print(units_str)
     '''
     Multiple BM Levels Examples:
@@ -48,9 +53,9 @@ def bmrs_flow(units):
         sql_query = '''SELECT bmunit_id, from_time, to_time, from_level, to_level, settlement_period 
                     FROM BMRS_PN_New
                     WHere bmunit_id IN ({})
-                	and from_time >= '2016-01-01 00:00:00.000'
-                	and from_time <= '2016-08-31 23:30:00.000'  
-                    '''.format(units_str)
+                	and from_time >= '{} 00:00:00.000'
+                	and from_time <= '2018-01-01 00:00:00.000'
+                    '''.format(units_str,start_date)
         
         fpn_data = sql.get_data(sql_query, sandbox_or_production = 'sandbox')
         for bmu in list(fpn_data.bmunit_id.unique()):
@@ -123,9 +128,9 @@ def bmrs_flow(units):
         mel_sql_query = '''SELECT bmunit_id, from_time, to_time, from_level, to_level, settlement_period 
                     FROM BMRS_MEL_New
                     WHere bmunit_id IN ({})
-                	and from_time >= '2016-01-01 00:00:00.000'
-                	and from_time <= '2016-08-31 23:30:00.000'                   
-                    '''.format(units_str)
+                	and from_time >= '{} 00:00:00.000'
+                	and from_time <= '2018-01-01 00:00:00.000'                   
+                    '''.format(units_str,start_date)
         
         mel_data = sql.get_data(mel_sql_query, sandbox_or_production = 'sandbox')
         for bmu in list(mel_data.bmunit_id.unique()):
@@ -257,14 +262,16 @@ def bmrs_flow(units):
 #        boalf = pd.concat(boalf_list)
 #        return boalf
 
+
     def get_boalf_sequence():
+        
         sql_query = '''
                     SELECT * 
                     FROM BMRS_BOALF_New
                     WHere bmunit_id IN ({})
-                	and from_time >= '2016-01-01 00:00:00.000'
-                	and from_time <= '2016-08-31 23:30:00.000'                
-                    '''.format(units_str)
+                	and from_time >= '{} 00:00:00.000'
+                	and from_time <= '{} 00:00:00.000'                
+                    '''.format(units_str,start_date, end_date)
     
         boalf_data = sql.get_data(sql_query, sandbox_or_production = 'sandbox')
         boalf_data = boalf_data.drop_duplicates(subset = ['bmunit_id', 'acceptance_number', 'acceptance_time','from_level', 'to_level','from_time', 'to_time'])
@@ -272,32 +279,45 @@ def bmrs_flow(units):
         boalf_list = []
         for bmu in boalf_data.bmunit_id.unique():
             boalf = boalf_data[boalf_data.bmunit_id == bmu].copy()        
-            boalf_minutely = []
-            for i, row in boalf.iterrows():
-                temp_df = pd.DataFrame({
-                        'acceptance_number':[row['acceptance_number'], row['acceptance_number']],
-                        'DateTime': [row['from_time'], row['to_time']],
-                        'BOA Value': [row['from_level'], row['to_level']]
-                        })
-                temp_df.set_index('DateTime', inplace = True)
-                temp_df_min = pd.DataFrame([])
-                temp_df_min['BOA Value'] = temp_df['BOA Value'].resample('1T').interpolate()
-                temp_df_min['acceptance_number'] = temp_df['acceptance_number'].resample('1T').ffill()
-                temp_df_min.reset_index(inplace = True)
-                temp_df.sort_values(by = 'acceptance_number', ascending = True, inplace = True)
-                boalf_minutely.append(temp_df_min)
-            boalf_min = pd.concat(boalf_minutely).drop_duplicates(subset=['DateTime','acceptance_number']).set_index(['DateTime','acceptance_number'])
             
-            boalf_stack = boalf_min.unstack()
-            boalf_stack.columns = boalf_stack.columns.map(lambda x: x[1])
-            boalf_stack = boalf_stack.T
-            acc_num_seq = boalf_stack.notna()[::-1].idxmax()
-            acc_num_df = acc_num_seq.to_frame(name = 'acceptance_number')
-            acc_num_df.reset_index(inplace = True)
-            idx_list = list(acc_num_df.set_index(['DateTime', 'acceptance_number']).index)
-            boalf_sequence = boalf_min[boalf_min.index.isin(idx_list)].reset_index().sort_values('DateTime', ascending = True)
-            boalf_sequence['bmunit_id'] = bmu
-            boalf_list.append(boalf_sequence)
+            
+            month_diff = math.ceil((pd.Timestamp(end_date) - pd.Timestamp(start_date))/np.timedelta64(1, 'M'))
+            
+            dt_splits = [str((pd.Timestamp(start_date) + pd.Timedelta(weeks=4.5*6*i)).date()) if pd.Timestamp(start_date) + pd.Timedelta(weeks=4.5*6*i) <= pd.Timestamp(end_date) else end_date for i in range(0, month_diff//6 + 1)]
+            dt_splits = [dt_splits[0],end_date] if len(dt_splits) == 1 else dt_splits
+            
+            boalf_split_collect = []
+            for j in range(len(dt_splits) - 1):
+                print(j)
+                boalf_split = boalf_data[(boalf_data.from_time >= dt_splits[j]) & (boalf_data.from_time < dt_splits[j+1])].copy()
+                boalf_minutely = []
+                for i, row in boalf_split.iterrows():
+                    temp_df = pd.DataFrame({
+                            'acceptance_number':[row['acceptance_number'], row['acceptance_number']],
+                            'DateTime': [row['from_time'], row['to_time']],
+                            'BOA Value': [row['from_level'], row['to_level']]
+                            })
+                    temp_df.set_index('DateTime', inplace = True)
+                    temp_df_min = pd.DataFrame([])
+                    temp_df_min['BOA Value'] = temp_df['BOA Value'].resample('1T').interpolate()
+                    temp_df_min['acceptance_number'] = temp_df['acceptance_number'].resample('1T').ffill()
+                    temp_df_min.reset_index(inplace = True)
+                    temp_df.sort_values(by = 'acceptance_number', ascending = True, inplace = True)
+                    boalf_minutely.append(temp_df_min)
+                boalf_min = pd.concat(boalf_minutely).drop_duplicates(subset=['DateTime','acceptance_number']).set_index(['DateTime','acceptance_number'])
+                
+                boalf_stack = boalf_min.unstack()
+                boalf_stack.columns = boalf_stack.columns.map(lambda x: x[1])
+                boalf_stack = boalf_stack.T
+                acc_num_seq = boalf_stack.notna()[::-1].idxmax()
+                acc_num_df = acc_num_seq.to_frame(name = 'acceptance_number')
+                acc_num_df.reset_index(inplace = True)
+                idx_list = list(acc_num_df.set_index(['DateTime', 'acceptance_number']).index)
+                boalf_sequence = boalf_min[boalf_min.index.isin(idx_list)].reset_index().sort_values('DateTime', ascending = True)
+                boalf_sequence['bmunit_id'] = bmu
+                boalf_split_collect.append(boalf_sequence)
+            boalf_split_collect = pd.concat(boalf_split_collect)
+            boalf_list.append(boalf_split_collect)
             
         boalf = pd.concat(boalf_list)
         return boalf
@@ -307,9 +327,9 @@ def bmrs_flow(units):
                     SELECT * 
                     FROM BMRS_BOD
                     WHere bmunit_id IN ({})
-                	and from_time >= '2016-01-01 00:00:00.000'
-                	and from_time <= '2016-08-31 23:30:00.000'  
-                    '''.format(units_str)
+                	and from_time >= '{} 00:00:00.000'
+                	and from_time <= '2018-01-01 00:00:00.000' 
+                    '''.format(units_str, start_date)
                     
         bod_data = sql.get_data(sql_query, sandbox_or_production = 'sandbox')
         

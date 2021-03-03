@@ -454,9 +454,9 @@ def write_to_db(engine, df, table_name):
 #    return final
 ############################################## DO THE THING ##################################################
 
-download_start_date = date(2017,12,31)
+download_start_date = date(2018,12,31)
 
-download_end_date = date(2018,12,31)
+download_end_date = date(2019,12,31)
 delta = download_end_date - download_start_date  # as timedelta
 logger.info('Connecting to DB..')
 engine = connect_to_db()

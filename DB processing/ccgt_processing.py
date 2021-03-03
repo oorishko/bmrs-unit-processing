@@ -35,11 +35,11 @@ def write_to_db(engine, df, table_name):
         return None
     else:
         st = time.time()
-        df.to_sql(table_name, engine, if_exists = 'append', chunksize = 50, index  = False, method='multi')
+        df.to_sql(table_name, engine, if_exists = 'append', chunksize = 30, index  = False, method='multi')
         et = time.time()
         print('Written {} rows to into {} in {:4.2f} seconds.'.format(len(df), table_name, et-st))
 
-table_name = 'CCGT_BMRS_Processing'
+table_name = 'Peterhead_BMRS_Processing'
 #
 #
 #wind_units_lcp = sql.get_data('''
@@ -65,7 +65,7 @@ table_name = 'CCGT_BMRS_Processing'
 #big_boy_units = ['T_CARR-1','T_CARR-2','T_DAMC-1','E_KLYN-A-1','T_MEDP-1', 'T_MRWD-1','T_PEHE-1', 
 #                 'T_SEAB-1','T_SEAB-2', 'T_RYHPS-1','T_KEAD-1','T_LAGA-1','T_HUMR-1', 'T_CNQPS-4',
 #                 'T_CNQPS-1','T_SPLN-1','T_WBURB-1', 'T_WBURB-2', 'T_WBURB-3', 'T_DRAXX-4']
-big_boy_units = ['T_HUMR-1','T_RYHPS-1','T_DAMC-1','E_KLYN-A-1','T_LAGA-1',]
+big_boy_units = ['T_PEHE-1']
 
 df = bmrs_flow(big_boy_units)
 df.replace([np.inf, -np.inf], np.nan, inplace = True)

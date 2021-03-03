@@ -210,10 +210,10 @@ def get_bod_table(bod_df):
     bod_df['timeFrom'] = pd.to_datetime(bod_df['timeFrom'], format = '%Y-%m-%d %H:%M:%S')
     bod_df['timeTo'] = pd.to_datetime(bod_df['timeTo'], format = '%Y-%m-%d %H:%M:%S')
     bod_df['bidOfferPairNumber'] = bod_df['bidOfferPairNumber'].astype(float).astype(int)
-    bod_df['bidOfferLevelTo'] = bod_df['bidOfferLevelTo'].astype(float).astype(int)
-    bod_df['bidOfferLevelFrom'] = bod_df['bidOfferLevelFrom'].astype(float).astype(int)
-    bod_df['bidPrice'] = bod_df['bidPrice'].astype(float).astype(int)
-    bod_df['offerPrice'] = bod_df['offerPrice'].astype(float).astype(int)
+    bod_df['bidOfferLevelTo'] = bod_df['bidOfferLevelTo'].astype(float)
+    bod_df['bidOfferLevelFrom'] = bod_df['bidOfferLevelFrom'].astype(float)
+    bod_df['bidPrice'] = bod_df['bidPrice'].astype(float)
+    bod_df['offerPrice'] = bod_df['offerPrice'].astype(float)
     
     
     bod_df = bod_df.rename(columns = {'recordType' : 'record_type',

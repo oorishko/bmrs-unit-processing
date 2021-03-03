@@ -26,7 +26,7 @@ from tqdm import tqdm
 #        'Roundponds Battery': 'V__HHABI001'
 #        }
 
-#units = ['T_HUMR-1']
+units = ['T_HUMR-1']
 def bmrs_flow(units):
     units_str = "'" + "','".join(units)+ "'"
     print(units_str)
@@ -48,7 +48,8 @@ def bmrs_flow(units):
         sql_query = '''SELECT bmunit_id, from_time, to_time, from_level, to_level, settlement_period 
                     FROM BMRS_PN_New
                     WHere bmunit_id IN ({})
-                    AND from_time >'2016-01-01'
+                	and from_time >= '2016-01-01 00:00:00.000'
+                	and from_time <= '2016-08-31 23:30:00.000'  
                     '''.format(units_str)
         
         fpn_data = sql.get_data(sql_query, sandbox_or_production = 'sandbox')
@@ -58,32 +59,56 @@ def bmrs_flow(units):
             fpn['to_time'] = pd.to_datetime(fpn['to_time'], format = '%Y-%m-%d %H:%M:%S')
             
             fpn = fpn.sort_values(by = 'from_time', ascending = True).reset_index(drop = True)
-        
-            fpn.set_index('from_time', inplace = True)
-            fpn['date'] = fpn.index.date
-            to_times = fpn.loc[fpn.groupby(['date', 'settlement_period']).to_time.idxmax()][['to_level', 'to_time', 'settlement_period']]
-            to_times.reset_index(drop = True, inplace = True)
-            to_times = to_times.rename(columns = {'to_level' : 'from_level', 'to_time':'from_time'})
-            to_times.set_index('from_time', inplace = True)
-            to_times['order'] = 2
-            fpn = fpn[['from_level']]
-            fpn['order'] = 1
-            fpn = pd.concat([fpn, to_times[['from_level', 'order']]])
-            fpn.reset_index(inplace = True)
-            fpn.drop_duplicates(subset = ['from_time', 'from_level'], inplace = True)
-            fpn = fpn.sort_values(by = ['from_time', 'order'], ascending = True)
-            fpn.set_index('from_time', inplace = True)
             
-            fpn = fpn[~fpn.index.duplicated(keep = 'first')][['from_level']]
-            
-            #time_range = pd.date_range(start = str(fpn.index[0]), end = str(fpn.index[-1]), freq = '30T')
-            fpn_min = fpn.resample('1T').interpolate()
-            fpn_hh = fpn_min.resample('30T').mean()
-            
-            fpn_hh = fpn_hh.rename(columns = {'from_level':'FPN Unadjusted'}).rename_axis('DateTime')
-            fpn_min = fpn_min.rename(columns = {'from_level':'FPN Unadjusted'}).rename_axis('DateTime')
+            # resample to hh - just like enapsys!
+            fpn['time_delta'] = fpn['to_time'] - fpn['from_time']
+            fpn['time_delta'] = fpn['time_delta'].dt.total_seconds() // 60
+            fpn['weighting'] = ((fpn['from_level'] + fpn['to_level']) /2) * fpn['time_delta']
+            fpn['HH'] = fpn['from_time'].dt.floor('30T')
+            fpn_hh = fpn.groupby(by = ['HH', 'settlement_period']).sum().reset_index()
+            fpn_hh['FPN Unadjusted'] = fpn_hh['weighting'] / 30
+            fpn_hh = fpn_hh[['HH','FPN Unadjusted']]
+            fpn_hh = fpn_hh.set_index('HH').rename_axis('DateTime')
             fpn_hh['bmunit_id'] = bmu
+            
+            # resampling minutely
+            fpn_min_df = []
+            for i, row in fpn.iterrows():
+                temp_df = pd.DataFrame({
+                        'DateTime': [row['from_time'], row['to_time']],
+                        'FPN Unadjusted': [row['from_level'], row['to_level']],
+                        'settlement_period':[row['settlement_period'], row['settlement_period']]
+                        })
+                temp_df.set_index('DateTime', inplace = True)
+                temp_df_min = pd.DataFrame([])
+                temp_df_min['FPN Unadjusted'] = temp_df['FPN Unadjusted'].resample('1T').interpolate()
+                temp_df_min['settlement_period'] = temp_df['settlement_period'].resample('1T').ffill()
+                fpn_min_df.append(temp_df_min)
+            fpn_min = pd.concat(fpn_min_df).sort_index(ascending = True)
+            fpn_min = fpn_min[~fpn_min.index.duplicated(keep = 'last')]
             fpn_min['bmunit_id'] = bmu
+            
+#            fpn.set_index('from_time', inplace = True)
+#            fpn['date'] = fpn.index.date
+#            to_times = fpn.loc[fpn.groupby(['date', 'settlement_period']).to_time.idxmax()][['to_level', 'to_time', 'settlement_period']]
+#            to_times.reset_index(drop = True, inplace = True)
+#            to_times = to_times.rename(columns = {'to_level' : 'from_level', 'to_time':'from_time'})
+#            to_times.set_index('from_time', inplace = True)
+#            to_times['order'] = 2
+#            fpn = fpn[['from_level']]
+#            fpn['order'] = 1
+#            fpn = pd.concat([fpn, to_times[['from_level', 'order']]])
+#            fpn.reset_index(inplace = True)
+#            fpn.drop_duplicates(subset = ['from_time', 'from_level'], inplace = True)
+#            fpn = fpn.sort_values(by = ['from_time', 'order'], ascending = True)
+#            fpn.set_index('from_time', inplace = True)
+#            
+#            fpn = fpn[~fpn.index.duplicated(keep = 'first')][['from_level']]
+#            
+#            fpn_min = fpn.resample('1T').interpolate()
+#            fpn_min = fpn_min.rename(columns = {'from_level':'FPN Unadjusted'}).rename_axis('DateTime')
+#            
+#            fpn_min['bmunit_id'] = bmu
             combine_fpn_min.append(fpn_min)
             combine_fpn_hh.append(fpn_hh)
         
@@ -98,7 +123,8 @@ def bmrs_flow(units):
         mel_sql_query = '''SELECT bmunit_id, from_time, to_time, from_level, to_level, settlement_period 
                     FROM BMRS_MEL_New
                     WHere bmunit_id IN ({})
-                    AND from_time >'2016-01-01'                    
+                	and from_time >= '2016-01-01 00:00:00.000'
+                	and from_time <= '2016-08-31 23:30:00.000'                   
                     '''.format(units_str)
         
         mel_data = sql.get_data(mel_sql_query, sandbox_or_production = 'sandbox')
@@ -108,32 +134,57 @@ def bmrs_flow(units):
             mel['to_time'] = pd.to_datetime(mel['to_time'], format = '%Y-%m-%d %H:%M:%S')
             
             mel = mel.sort_values(by = 'from_time', ascending = True).reset_index(drop = True)
-        
-            mel.set_index('from_time', inplace = True)
-            mel['date'] = mel.index.date
-            mel_to_times = mel.loc[mel.groupby(['date', 'settlement_period']).to_time.idxmax()][['to_level', 'to_time', 'settlement_period']]
-            mel_to_times.reset_index(drop = True, inplace = True)
-            mel_to_times = mel_to_times.rename(columns = {'to_level' : 'from_level', 'to_time':'from_time'})
-            mel_to_times.set_index('from_time', inplace = True)
-            mel_to_times['order'] = 2
-            mel = mel[['from_level']]
-            mel['order'] = 1
-            mel = pd.concat([mel, mel_to_times[['from_level', 'order']]])
-            mel.reset_index(inplace = True)
-            mel.drop_duplicates(subset = ['from_time', 'from_level'], inplace = True)
-            mel = mel.sort_values(by = ['from_time', 'order'], ascending = True)
-            mel.set_index('from_time', inplace = True)
             
-            mel = mel[~mel.index.duplicated(keep = 'first')][['from_level']]
-            
-            #time_range = pd.date_range(start = str(fpn.index[0]), end = str(fpn.index[-1]), freq = '30T')
-            mel_min = mel.resample('1T').interpolate()
-            mel_hh = mel_min.resample('30T').mean()
-            
-            mel_hh = mel_hh.rename(columns = {'from_level':'MEL'}).rename_axis('DateTime')
-            mel_min = mel_min.rename(columns = {'from_level':'MEL'}).rename_axis('DateTime')
+            # resample to hh - just like enapsys!
+            mel['time_delta'] = mel['to_time'] - mel['from_time']
+            mel['time_delta'] = mel['time_delta'].dt.total_seconds() // 60
+            mel['weighting'] = ((mel['from_level'] + mel['to_level']) /2) * mel['time_delta']
+            mel['HH'] = mel['from_time'].dt.floor('30T')
+            mel_hh = mel.groupby(by = ['HH', 'settlement_period']).sum().reset_index()
+            mel_hh['MEL'] = mel_hh['weighting'] / 30
+            mel_hh = mel_hh[['HH','MEL']]
+            mel_hh = mel_hh.set_index('HH').rename_axis('DateTime')
             mel_hh['bmunit_id'] = bmu
+            
+            # resampling minutely
+            mel_min_df = []
+            for i, row in mel.iterrows():
+                temp_df = pd.DataFrame({
+                        'DateTime': [row['from_time'], row['to_time']],
+                        'MEL': [row['from_level'], row['to_level']]
+                        
+                        })
+                temp_df.set_index('DateTime', inplace = True)
+                temp_df_min = pd.DataFrame([])
+                temp_df_min['MEL'] = temp_df['MEL'].resample('1T').interpolate()
+                mel_min_df.append(temp_df_min)
+            mel_min = pd.concat(mel_min_df).sort_index(ascending = True)
+            mel_min = mel_min[~mel_min.index.duplicated(keep = 'last')]
             mel_min['bmunit_id'] = bmu
+            
+            # oldie
+#            mel.set_index('from_time', inplace = True)
+#            mel['date'] = mel.index.date
+#            to_times = mel.loc[mel.groupby(['date', 'settlement_period']).to_time.idxmax()][['to_level', 'to_time', 'settlement_period']]
+#            to_times.reset_index(drop = True, inplace = True)
+#            to_times = to_times.rename(columns = {'to_level' : 'from_level', 'to_time':'from_time'})
+#            to_times.set_index('from_time', inplace = True)
+#            to_times['order'] = 2
+#            mel = mel[['from_level']]
+#            mel['order'] = 1
+#            mel = pd.concat([mel, to_times[['from_level', 'order']]])
+#            mel.reset_index(inplace = True)
+#            mel.drop_duplicates(subset = ['from_time', 'from_level'], inplace = True)
+#            mel = mel.sort_values(by = ['from_time', 'order'], ascending = True)
+#            mel.set_index('from_time', inplace = True)
+#            
+#            mel = mel[~mel.index.duplicated(keep = 'first')][['from_level']]
+#            
+#            mel_min = mel.resample('1T').interpolate()
+#            mel_min = mel_min.rename(columns = {'from_level':'MEL'}).rename_axis('DateTime')
+#            
+#            mel_min['bmunit_id'] = bmu
+                        
             combine_mel_min.append(mel_min)
             combine_mel_hh.append(mel_hh)
             
@@ -155,34 +206,98 @@ def bmrs_flow(units):
         
         return fpn_min_adjusted, fpn_hh_adjusted
     
-    def get_boalf_profile():
+#    def get_boalf_profile():
+#        sql_query = '''
+#                    SELECT * 
+#                    FROM BMRS_BOALF_New
+#                    WHere bmunit_id IN ({})
+#                	and from_time >= '2016-01-01 00:00:00.000'
+#                	and from_time <= '2016-12-31 23:30:00.000'                
+#                    '''.format(units_str)
+#    
+#        boalf_data = sql.get_data(sql_query, sandbox_or_production = 'sandbox')
+#        boalf_list = []
+#        for bmu in boalf_data.bmunit_id.unique():
+#            boalf = boalf_data[boalf_data.bmunit_id == bmu].copy()
+#            boalf['DateTime'] = pd.to_datetime(boalf['DateTime'])
+#            boalf = boalf.sort_values(by = ['DateTime', 'acceptance_number'], ascending = True)
+#            boalf = boalf.drop_duplicates(subset = ['DateTime'], keep = 'last')
+#            boalf['AN diff'] = boalf['acceptance_number'].diff()
+#            boalf = boalf.loc[boalf['AN diff'] >= 0]
+#            boalf.set_index('DateTime', inplace = True)
+#            boalf['Date'] = boalf.index.date
+#            start = boalf.iloc[[0]].index[0].floor('30T')
+#            end = boalf.iloc[[len(boalf)-1]].index[0].ceil('30T')
+#            boalf_range = pd.date_range(start = start, end = end, freq= '30T')   
+#            boalf_hh = pd.DataFrame({'DateTime': boalf_range, 'level': 0})
+#            boalf_hh.set_index('DateTime', inplace = True)
+#        
+#            df = boalf.merge(boalf_hh, how = 'outer', left_index = True, right_index = True, suffixes = ['', '0'])
+#            df['Date'] = df.index.date
+#            df.rename(columns = {'level':'BOA Value', 'level0': 'BOA 0 Ref'}, inplace = True)
+#            df['bmunit_id'] = bmu
+#            df['BOA Shift - 1'] = df['BOA Value'].shift(-1)
+#            df['BOA Shift 1'] = df['BOA Value'].shift(1)
+#            df.loc[(~df['BOA Value'].isna()) & (df['BOA Shift 1'].isna()), 'BOA Start'] = 1
+#            df.loc[(df['BOA Value'].isna()) & (~df['BOA Shift 1'].isna()), 'BOA Start'] = 1
+#            df.loc[(~df['BOA Value'].isna()) & (df['BOA Shift - 1'].isna()), 'BOA End'] = 1
+#            df.loc[(df['BOA Value'].isna()) & (~df['BOA Shift - 1'].isna()), 'BOA End'] = 1
+#            df_minutely = df.resample('1T').ffill()[['bmunit_id', 'acceptance_number', 'acceptance_time','settlement_period', 'timestamp', 'Date']]
+#            df_minutely = df_minutely.merge(df[['BOA Value', 'BOA Start', 'BOA End']], how = 'left', left_index = True, right_index = True)
+#            df_minutely['BOA End Shift']  = df_minutely['BOA End'].shift(1)
+#            df_minutely.loc[(df_minutely['BOA End Shift'] == 1) & (df_minutely['BOA Start'].isna()), 'BOA Start'] = df_minutely['BOA End Shift']
+#            s = df_minutely['BOA Start'].eq(1).cumsum()
+#
+#            df_minutely['BOA Value Minutely'] = df_minutely.groupby(s)['BOA Value'].apply(lambda group: group.interpolate())
+#            df_minutely = df_minutely[['bmunit_id', 'acceptance_number', 'acceptance_time',
+#                                       'settlement_period', 'timestamp', 'Date', 'BOA Value', 'BOA Start',
+#                                       'BOA End','BOA Value Minutely']]
+#            boalf_list.append(df_minutely)
+#            
+#        boalf = pd.concat(boalf_list)
+#        return boalf
+
+    def get_boalf_sequence():
         sql_query = '''
                     SELECT * 
-                    FROM BMRS_BOALF
+                    FROM BMRS_BOALF_New
                     WHere bmunit_id IN ({})
-                    AND DateTime >'2016-01-01'             
+                	and from_time >= '2016-01-01 00:00:00.000'
+                	and from_time <= '2016-08-31 23:30:00.000'                
                     '''.format(units_str)
     
         boalf_data = sql.get_data(sql_query, sandbox_or_production = 'sandbox')
+        boalf_data = boalf_data.drop_duplicates(subset = ['bmunit_id', 'acceptance_number', 'acceptance_time','from_level', 'to_level','from_time', 'to_time'])
+        
         boalf_list = []
         for bmu in boalf_data.bmunit_id.unique():
-            boalf = boalf_data[boalf_data.bmunit_id == bmu].copy()
-            boalf['DateTime'] = pd.to_datetime(boalf['DateTime'])
-            boalf = boalf.sort_values(by = 'DateTime', ascending = True)
+            boalf = boalf_data[boalf_data.bmunit_id == bmu].copy()        
+            boalf_minutely = []
+            for i, row in boalf.iterrows():
+                temp_df = pd.DataFrame({
+                        'acceptance_number':[row['acceptance_number'], row['acceptance_number']],
+                        'DateTime': [row['from_time'], row['to_time']],
+                        'BOA Value': [row['from_level'], row['to_level']]
+                        })
+                temp_df.set_index('DateTime', inplace = True)
+                temp_df_min = pd.DataFrame([])
+                temp_df_min['BOA Value'] = temp_df['BOA Value'].resample('1T').interpolate()
+                temp_df_min['acceptance_number'] = temp_df['acceptance_number'].resample('1T').ffill()
+                temp_df_min.reset_index(inplace = True)
+                temp_df.sort_values(by = 'acceptance_number', ascending = True, inplace = True)
+                boalf_minutely.append(temp_df_min)
+            boalf_min = pd.concat(boalf_minutely).drop_duplicates(subset=['DateTime','acceptance_number']).set_index(['DateTime','acceptance_number'])
             
-            boalf.set_index('DateTime', inplace = True)
-            boalf['Date'] = boalf.index.date
-            start = boalf.iloc[[0]].index[0].floor('30T')
-            end = boalf.iloc[[len(boalf)-1]].index[0].ceil('30T')
-            boalf_range = pd.date_range(start = start, end = end, freq= '30T')   
-            boalf_hh = pd.DataFrame({'DateTime': boalf_range, 'level': 0})
-            boalf_hh.set_index('DateTime', inplace = True)
-        
-            df = boalf.merge(boalf_hh, how = 'outer', left_index = True, right_index = True, suffixes = ['', '0'])
-            df['Date'] = df.index.date
-            df.rename(columns = {'level':'BOA Value', 'level0': 'BOA 0 Ref'}, inplace = True)
-            df['bmunit_id'] = bmu
-            boalf_list.append(df)
+            boalf_stack = boalf_min.unstack()
+            boalf_stack.columns = boalf_stack.columns.map(lambda x: x[1])
+            boalf_stack = boalf_stack.T
+            acc_num_seq = boalf_stack.notna()[::-1].idxmax()
+            acc_num_df = acc_num_seq.to_frame(name = 'acceptance_number')
+            acc_num_df.reset_index(inplace = True)
+            idx_list = list(acc_num_df.set_index(['DateTime', 'acceptance_number']).index)
+            boalf_sequence = boalf_min[boalf_min.index.isin(idx_list)].reset_index().sort_values('DateTime', ascending = True)
+            boalf_sequence['bmunit_id'] = bmu
+            boalf_list.append(boalf_sequence)
             
         boalf = pd.concat(boalf_list)
         return boalf
@@ -192,7 +307,8 @@ def bmrs_flow(units):
                     SELECT * 
                     FROM BMRS_BOD
                     WHere bmunit_id IN ({})
-                    AND from_time >'2016-01-01'
+                	and from_time >= '2016-01-01 00:00:00.000'
+                	and from_time <= '2016-08-31 23:30:00.000'  
                     '''.format(units_str)
                     
         bod_data = sql.get_data(sql_query, sandbox_or_production = 'sandbox')
@@ -228,7 +344,7 @@ def bmrs_flow(units):
                     'from_level_merged': list,
                     'to_level': list,
                     'bid_price': 'first',
-                    'offer_price' : 'first'})
+                    'offer_price' : 'last'})
             bod_clean.reset_index(inplace = True)        
             bod_clean['from_level_merged'] = bod_clean.apply(lambda x: {**x['from_level_merged'][0], **x['from_level_merged'][1]} if len(x['from_level_merged']) == 2 else x['from_level_merged'][0], axis = 1 )
             bod_clean.set_index('from_time',inplace = True)
@@ -268,65 +384,62 @@ def bmrs_flow(units):
     def get_bm_and_co_volumes():
         # get fpn
         fpn_min, fpn_hh = get_fpn_profile()
-        
         # get boalf
-        boalf = get_boalf_profile()
+        boalf = get_boalf_sequence()
         
-        boalf = boalf.reset_index()
         # get fpn and boalf together
         
         # when no BM is in play, using HH resampled FPN is more accurate
         # separate them out into merging minutely and HH
-        collect_boas = []
-        for bmu in fpn_hh.bmunit_id.unique():
-            fpn_bmu = fpn_hh[fpn_hh.bmunit_id == bmu].sort_values(by = 'DateTime', ascending = True)
-            boalf_bmu = boalf[boalf.bmunit_id == bmu].copy().sort_values(by = ['DateTime', 'acceptance_number'], ascending = True)
-            bmu_start_date = min(fpn_bmu.DateTime.iloc[0], boalf_bmu.DateTime.iloc[0]).floor('30T')
-            bmu_end_date = max(fpn_bmu.DateTime.iloc[-1], boalf_bmu.DateTime.iloc[-1]).ceil('30T')
-            
-            pre_boa_range = pd.date_range(start = bmu_start_date, end = boalf_bmu.DateTime.iloc[0].floor('30T'), freq = '30T')
-            pre_boa_range_df = pd.DataFrame(index = pre_boa_range, columns = boalf.columns[1:], data = np.nan)
-            pre_boa_range_df.rename_axis('DateTime', inplace = True)
-            pre_boa_range_df.reset_index(inplace = True)
-            
-            post_boa_range = pd.date_range(start = boalf_bmu.DateTime.iloc[-1].ceil('30T'), end = bmu_end_date, freq = '30T')
-            post_boa_range_df = pd.DataFrame(index = post_boa_range, columns = boalf.columns[1:], data = np.nan)
-            post_boa_range_df.rename_axis('DateTime', inplace = True)
-            post_boa_range_df.reset_index(inplace = True)
-            
-            boalf_bmu = pd.concat([pre_boa_range_df, boalf_bmu, post_boa_range_df])
-            boalf_bmu['bmunit_id'] = bmu
-            
-            collect_boas.append(boalf_bmu)
-        boalf = pd.concat(collect_boas).sort_values(by =['bmunit_id', 'DateTime', 'acceptance_number'], ascending = True)        
-        boalf.reset_index(inplace = True, drop = True)
+#        collect_boas = []
+#        for bmu in fpn_hh.bmunit_id.unique():
+#            fpn_bmu = fpn_hh[fpn_hh.bmunit_id == bmu].sort_values(by = 'DateTime', ascending = True)
+#            boalf_bmu = boalf[boalf.bmunit_id == bmu].copy().sort_values(by = ['DateTime', 'acceptance_number'], ascending = True)
+#            bmu_start_date = min(fpn_bmu.DateTime.iloc[0], boalf_bmu.DateTime.iloc[0]).floor('30T')
+#            bmu_end_date = max(fpn_bmu.DateTime.iloc[-1], boalf_bmu.DateTime.iloc[-1]).ceil('30T')
+#            
+#            pre_boa_range = pd.date_range(start = bmu_start_date, end = boalf_bmu.DateTime.iloc[0].floor('30T'), freq = '30T')
+#            pre_boa_range_df = pd.DataFrame(index = pre_boa_range, columns = boalf.columns[1:], data = np.nan)
+#            pre_boa_range_df.rename_axis('DateTime', inplace = True)
+#            pre_boa_range_df.reset_index(inplace = True)
+#            
+#            post_boa_range = pd.date_range(start = boalf_bmu.DateTime.iloc[-1].ceil('30T'), end = bmu_end_date, freq = '30T')
+#            post_boa_range_df = pd.DataFrame(index = post_boa_range, columns = boalf.columns[1:], data = np.nan)
+#            post_boa_range_df.rename_axis('DateTime', inplace = True)
+#            post_boa_range_df.reset_index(inplace = True)
+#            
+#            boalf_bmu = pd.concat([pre_boa_range_df, boalf_bmu, post_boa_range_df])
+#            boalf_bmu['bmunit_id'] = bmu
+#            
+#            collect_boas.append(boalf_bmu)
+#        boalf = pd.concat(collect_boas).sort_values(by =['bmunit_id', 'DateTime', 'acceptance_number'], ascending = True)        
+#        boalf.reset_index(inplace = True, drop = True)
         
-        df_wo_boalf = boalf.loc[boalf.acceptance_number.isna(), :]
-        df_with_boalf = boalf.loc[boalf.acceptance_number.notna(), :]
-        fpn_with_boalf = df_with_boalf.merge(fpn_min, how = 'left', on = ['DateTime','bmunit_id'])
-        fpn_wo_boalf = df_wo_boalf.merge(fpn_hh, how = 'left', on = ['DateTime','bmunit_id'])
-        fpn_and_boalf = pd.concat([fpn_with_boalf, fpn_wo_boalf])
-        fpn_and_boalf.sort_values(inplace = True, by = ['bmunit_id','DateTime'])
-        # keep Dates
-        fpn_and_boalf.reset_index(inplace = True)
-        fpn_and_boalf.loc[fpn_and_boalf.settlement_period.isna(), 'settlement_period'] = fpn_and_boalf.apply(lambda x: 1 + (x['DateTime'].hour * 2) + (x['DateTime'].minute // 30), axis = 1)
-        # get bod
+#        df_wo_boalf = boalf.loc[boalf.acceptance_number.isna(), :]
+#        df_with_boalf = boalf.loc[boalf.acceptance_number.notna(), :]
+        fpn_and_boalf = boalf.merge(fpn_min, how = 'outer', on = ['DateTime','bmunit_id'])
+        
+#        fpn_wo_boalf = df_wo_boalf.merge(fpn_hh, how = 'left', on = ['DateTime','bmunit_id'])
+#        fpn_and_boalf = pd.concat([fpn_with_boalf, fpn_wo_boalf])
+#        fpn_and_boalf.sort_values(inplace = True, by = ['bmunit_id','DateTime'])
+#        # keep Dates
+#        fpn_and_boalf.reset_index(inplace = True)
+        fpn_and_boalf['Date'] = fpn_and_boalf['DateTime'].dt.date
+#        # get bod
         bod = get_bod_profile()
         
         # joing bod with fpn and boalf
         all_bb = fpn_and_boalf.merge(bod, how = 'left', on = ['bmunit_id', 'Date', 'settlement_period'])
         
-        # I think here is the place where you can split data by bid/offer levels + nans and do the thing
-        # the final output should be HH volumes for each level
-        
         # loop through and then have to merge left on level 1
         collect_bmus_hh = []
         #collect_bmus_all = []
         for bmu in tqdm(list(all_bb.bmunit_id.unique())):
+            
             all_bmu_data = all_bb[(all_bb.bmunit_id == bmu)].copy()
             all_bmu_data = all_bmu_data.sort_values(by = ['DateTime', 'acceptance_number'], ascending = True)
             all_bmu_data = all_bmu_data.reset_index(drop = True)
-            all_bmu_data.drop(['index'], axis = 1, inplace = True)
+            all_bmu_data.loc[all_bmu_data['BOA Value'] > all_bmu_data['MEL'],'BOA Value'] = all_bmu_data['MEL']
             all_bmu_data['BM Delta'] = all_bmu_data['BOA Value'] - all_bmu_data['FPN']
             
                 # flag if BM period finished - if it did, the period that follows is back to FPN
@@ -448,11 +561,16 @@ def bmrs_flow(units):
             all_bmu_data['Bid Income'] = all_bmu_data[['Bid Income @ 1', 'Bid Income @ 2', 'Bid Income @ 3', 'Bid Income @ 4', 'Bid Income @ 5']].sum(axis = 1)
             
             all_bmu_data['HH'] = all_bmu_data['DateTime'].dt.floor('30T')
-            all_bmu_data = all_bmu_data.fillna(0)
+            
+#            sum_columns = ['FPN Unadjusted','MEL','FPN','FPN Volume','CO Volume',
+#                    'Bid Vol @ 5','Bid Vol @ 4','Bid Vol @ 3','Bid Vol @ 2','Bid Vol @ 1',
+#                    'Bid Volume','Offer Volume','Offer Vol @ 1','Offer Vol @ 2','Offer Vol @ 3',
+#                    'Offer Vol @ 4','Offer Vol @ 5','Bid Income @ 5','Bid Income @ 4','Bid Income @ 3',
+#                    'Bid Income @ 2','Bid Income @ 1','Bid Income','Offer Income','Offer Income @ 1',
+#                    'Offer Income @ 2','Offer Income @ 3','Offer Income @ 4','Offer Income @ 5']
+            #all_bmu_data = all_bmu_data[all_bmu_data['acceptance_number'].notna()]
+            
             bmu_hh_summary = all_bmu_data.groupby(by = ['bmunit_id','HH']).agg({
-                    'FPN Unadjusted': 'mean',
-                    'MEL': 'mean', 
-                    'FPN': 'mean',
                     'FPN Volume': 'sum',
                     'CO Volume' : 'sum',
                     'Bid Vol @ 5':'sum',
@@ -479,15 +597,32 @@ def bmrs_flow(units):
                     'Offer Income @ 3':'sum',
                     'Offer Income @ 4':'sum',
                     'Offer Income @ 5':'sum',
+                    'bid_price-5': 'mean',
+                    'bid_price-4': 'mean',
+                    'bid_price-3': 'mean',
+                    'bid_price-2': 'mean',
+                    'bid_price-1': 'mean',
+                    'offer_price-1': 'mean',
+                    'offer_price-2': 'mean',
+                    'offer_price-3': 'mean',
+                    'offer_price-4': 'mean',
+                    'offer_price-5': 'mean',
+                    'bl-3':'mean',
+                    'bl-2':'mean',
+                    'bl-1':'mean',
+                    'ol-1':'mean',
+                    'ol-2':'mean',
+                    'ol-3':'mean',
                     })
             bmu_hh_summary.reset_index(inplace = True) 
             bmu_hh_summary['VWA Bid Price'] = bmu_hh_summary['Bid Income'] / bmu_hh_summary['Bid Volume']
             bmu_hh_summary['VWA Offer Price'] = bmu_hh_summary['Offer Income'] / bmu_hh_summary['Offer Volume']
-            bmu_hh_summary.rename(columns = {'HH':'ValueDate'}, inplace = True)
+            bmu_hh_summary.rename(columns = {'HH':'DateTime'}, inplace = True)
             collect_bmus_hh.append(bmu_hh_summary)
             #collect_bmus_all.append(all_bmu_data)
             #assert (all_bmu_data[~all_bmu_data['Offer Volume'].isna()]['Offer Volume'] == all_bmu_data[~all_bmu_data['Offer Volume'].isna()][['Offer Vol @ 1', 'Offer Vol @ 2', 'Offer Vol @ 3', 'Offer Vol @ 4', 'Offer Vol @ 5']].sum(axis = 1)).all(), 'Offer Level Volumes do not add up'
         df = pd.concat(collect_bmus_hh)
+        df = df.merge(fpn_hh, on = ['bmunit_id','DateTime'], how = 'outer')
         #bmu_level_data = pd.concat(collect_bmus_all)
         return df
 
